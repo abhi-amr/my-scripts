@@ -4,6 +4,7 @@ import time
 import random
 import requests
 import gspread
+import random
 from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 load_dotenv()
@@ -34,16 +35,48 @@ DUMMY_RESPONSES_FILE = os.path.join(os.path.dirname(__file__), "dummy_response.j
 MIN_DELAY = float(os.getenv("MIN_DELAY"))
 MAX_DELAY = float(os.getenv("MAX_DELAY"))
 
+# Long pause settings — occasionally pause much longer to avoid pattern detection
+LONG_PAUSE_CHANCE = float(os.getenv("LONG_PAUSE_CHANCE", 0.10))  # 10% chance by default
+LONG_PAUSE_MIN    = float(os.getenv("LONG_PAUSE_MIN", 10.0))     # seconds
+LONG_PAUSE_MAX    = float(os.getenv("LONG_PAUSE_MAX", 30.0))     # seconds
+
 # Optional proxy (recommended if no VPN)
-PROXIES = None
-# Example:
-# PROXIES = {
-#     "http": "http://user:pass@proxy_ip:port",
-#     "https": "http://user:pass@proxy_ip:port"
-# }
+# PROXIES = None
+PROXIES = {
+    "http":  "socks5h://127.0.0.1:9050",
+    "https": "socks5h://127.0.0.1:9050"
+}
 
 
-#Service account details
+# ==================================================
+# USER-AGENT POOL  (rotated per request)
+# ==================================================
+
+USER_AGENTS = [
+    # Chrome on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    # Chrome on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    # Safari on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    # Firefox on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    # Chrome on Linux
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    # Edge on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+]
+
+
+# ==================================================
+# Service account details
+# ==================================================
+
 TYPE = os.getenv("TYPE")
 PROJECT_ID = os.getenv("PROJECT_ID")
 PRIVATE_KEY_ID = os.getenv("PRIVATE_KEY_ID")
@@ -91,32 +124,63 @@ def connect_to_sheet(sheet_name=None):
         return sh.worksheet(sheet_name)
     return sh.sheet1
 
+def build_headers():
+    """
+    Build a realistic browser header set for the chosen User-Agent.
+    Sec-CH-UA and related hints are only included for Chromium-based agents
+    to avoid mismatched fingerprints.
+    """
+    ua = random.choice(USER_AGENTS)
+
+    headers = {
+        "Accept":          "application/json, text/plain, */*",
+        "Accept-Language": random.choice([
+            "en-US,en;q=0.9",
+            "en-GB,en;q=0.9",
+            "en-US,en;q=0.8,es;q=0.5",
+            "en-US,en;q=0.9,fr;q=0.7",
+        ]),
+        "Connection":   "keep-alive",
+        "Referer":      f"https://{TARGET_DOMAIN}/",
+        "User-Agent":   ua,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+
+    # Only inject Chromium client-hints for Chrome/Edge user-agents
+    if "Chrome" in ua or "Edg" in ua:
+        chrome_ver = ua.split("Chrome/")[1].split(".")[0] if "Chrome/" in ua else "124"
+        headers.update({
+            "sec-ch-ua": f'"Google Chrome";v="{chrome_ver}", "Not?A_Brand";v="8", "Chromium";v="{chrome_ver}"',
+            "sec-ch-ua-mobile":   "?0",
+            "sec-ch-ua-platform": random.choice(['"Windows"', '"macOS"', '"Linux"']),
+        })
+
+    return headers
+
 def create_session():
     session = requests.Session()
 
     # Headers copied from browser curl
-    session.headers.update({
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive",
-        "Referer": f"https://{TARGET_DOMAIN}/",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/141.0.0.0 Safari/537.36"
-        ),
-        "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-    })
+    session.headers.update(build_headers())
 
     if PROXIES:
         session.proxies.update(PROXIES)
 
     return session
+
+def human_delay():
+    """
+    Sleep for a randomized duration.
+    10% of the time, adds a much longer pause to break up any
+    detectable rhythm in the request pattern.
+    """
+    delay = random.uniform(MIN_DELAY, MAX_DELAY)
+    if random.random() < LONG_PAUSE_CHANCE:
+        delay += random.uniform(LONG_PAUSE_MIN, LONG_PAUSE_MAX)
+        print(f"  [long pause: {delay:.1f}s]")
+    time.sleep(delay)
 
 def load_dummy_responses():
     if not os.path.exists(DUMMY_RESPONSES_FILE):
@@ -170,27 +234,38 @@ def main():
     sheet = connect_to_sheet()
     session = create_session()
 
-    # dummy_responses = load_dummy_responses()
-    # responses = dummy_responses.get("responses", [])
+    dummy_map = load_dummy_responses()
 
-    for identifier in range(START_ID, END_ID + 1):
+    #shuffle ids
+    id_list = list(range(START_ID, END_ID + 1))
+    random.shuffle(id_list)
+
+    for identifier in id_list:
         url = f"{BASE_URL}{identifier}"
-        print(f"Processing ID: {identifier} | URL: {url}")
-        try:
-            response = session.get(url, timeout=12)
-            response.raise_for_status()
-            data = response.json()
+        # print(f"Processing ID: {identifier} | URL: {url}")
 
-            if data["validationStatus"] == "0":
+        # Rotate headers on every request to avoid a static fingerprint
+        session.headers.update(build_headers())
+
+        try:
+            # response = session.get(url, timeout=12)
+            # response.raise_for_status()
+            # data = response.json()
+
+            data = dummy_map.get(str(identifier))
+            if data is None:
+                continue
+
+            if data.get("validationStatus") == "0":
+                human_delay()
                 continue
             
             append_dynamic_json(sheet, data)
 
         except Exception as e:
-            print(f"Error for response: {e}")
+            print(f"Error for response: {identifier} | {e}")
 
-        # Human-like delay
-        time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+        human_delay()
 
     print("Completed. Data saved to Sheet.")
     print("SCRIPT COMPLETED")
