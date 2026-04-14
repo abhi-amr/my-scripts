@@ -5,6 +5,7 @@ import random
 import requests
 import gspread
 import random
+import socket
 from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 load_dotenv()
@@ -170,6 +171,19 @@ def create_session():
 
     return session
 
+def get_current_ip(session):
+    try:
+        response = session.get("https://api.ipify.org?format=json", timeout=10)
+        return response.json().get("ip", "unknown")
+    except Exception as e:
+        return f"error: {e}"
+    
+def renew_tor_circuit():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.connect(("127.0.0.1", 9051))
+        s.send(b'AUTHENTICATE ""\r\nSIGNAL NEWNYM\r\n')
+        time.sleep(5)  # wait for new circuit to establish
+
 def human_delay():
     """
     Sleep for a randomized duration.
@@ -239,6 +253,7 @@ def main():
     #shuffle ids
     id_list = list(range(START_ID, END_ID + 1))
     random.shuffle(id_list)
+    print(f"  [circuit renewed] New IP: {get_current_ip(session)}")
 
     for identifier in id_list:
         url = f"{BASE_URL}{identifier}"
@@ -251,6 +266,9 @@ def main():
             # response = session.get(url, timeout=12)
             # response.raise_for_status()
             # data = response.json()
+            
+            renew_tor_circuit()
+            print(f"  [circuit renewed] New IP: {get_current_ip(session)}")
 
             data = dummy_map.get(str(identifier))
             if data is None:

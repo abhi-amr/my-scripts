@@ -1,2 +1,4 @@
 google_sheet_creds.json
 .env
+recommendation-service/ratings.csv
+recommendation-service/tags.csv

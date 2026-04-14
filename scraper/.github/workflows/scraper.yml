@@ -1,0 +1,56 @@
+name: Run Scraper
+
+on:
+  workflow_dispatch: # allows manual trigger only
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Tor
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y tor
+          sudo service tor start
+          sleep 5  # give Tor time to bootstrap
+
+      - name: Verify Tor is working
+        run: |
+          curl --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          TARGET_DOMAIN: ${{ secrets.TARGET_DOMAIN }}
+          TARGET_ENDPOINT: ${{ secrets.TARGET_ENDPOINT }}
+          START_ID: ${{ secrets.START_ID }}
+          END_ID: ${{ secrets.END_ID }}
+          EXCEL_FILE_NAME: ${{ secrets.EXCEL_FILE_NAME }}
+          MIN_DELAY: ${{ secrets.MIN_DELAY }}
+          MAX_DELAY: ${{ secrets.MAX_DELAY }}
+          LONG_PAUSE_CHANCE: ${{ secrets.LONG_PAUSE_CHANCE }}
+          LONG_PAUSE_MIN: ${{ secrets.LONG_PAUSE_MIN }}
+          LONG_PAUSE_MAX: ${{ secrets.LONG_PAUSE_MAX }}
+          TYPE: ${{ secrets.TYPE }}
+          PROJECT_ID: ${{ secrets.PROJECT_ID }}
+          PRIVATE_KEY_ID: ${{ secrets.PRIVATE_KEY_ID }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          CLIENT_EMAIL: ${{ secrets.CLIENT_EMAIL }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          AUTH_URI: ${{ secrets.AUTH_URI }}
+          TOKEN_URI: ${{ secrets.TOKEN_URI }}
+          AUTH_PROVIDER_X509_CERT_URL: ${{ secrets.AUTH_PROVIDER_X509_CERT_URL }}
+          CLIENT_X509_CERT_URL: ${{ secrets.CLIENT_X509_CERT_URL }}
+          UNIVERSE_DOMAIN: ${{ secrets.UNIVERSE_DOMAIN }}
+        run: python scraper/scraper_me.py
